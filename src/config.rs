@@ -72,10 +72,10 @@ pub struct GithubSource {
     pub asset_filter: Option<String>,
 }
 
-/// Homebrew/Scoop source configuration.
+/// Homebrew cask/formula source configuration.
 #[derive(Debug, Deserialize, Clone)]
 pub struct HomebrewSource {
-    /// Homebrew formula URL or Scoop manifest URL
+    /// Homebrew formula URL (.rb file)
     pub manifest_url: String,
     /// Architecture filter (e.g. x64, arm64)
     pub arch: Option<String>,
@@ -85,12 +85,24 @@ pub struct HomebrewSource {
     pub language: Option<String>,
 }
 
-/// Mirror source type - either GitHub or Homebrew.
+/// Scoop manifest source configuration.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ScoopSource {
+    /// Scoop manifest URL (.json file)
+    pub manifest_url: String,
+    /// Architecture filter (e.g. x64, x86, arm64)
+    pub arch: Option<String>,
+    /// Filename override for destination file
+    pub filename: Option<String>,
+}
+
+/// Mirror source type - GitHub, Homebrew, or Scoop.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum MirrorSource {
     Github(GithubSource),
     Homebrew(HomebrewSource),
+    Scoop(ScoopSource),
 }
 
 /// A mirror configuration entry.
@@ -100,7 +112,7 @@ pub struct MirrorConfig {
     pub name: String,
     /// Regex pattern to extract version (uses first capture group)
     pub regex: String,
-    /// Source configuration (github or homebrew)
+    /// Source configuration (github, homebrew, or scoop)
     pub source: MirrorSource,
     /// Override target URL for this mirror
     pub target: Option<String>,
@@ -262,12 +274,20 @@ regex = "([0-9.]+)"
 [mirrors.source.homebrew]
 manifest_url = "https://example.com/telegram.rb"
 arch = "x64"
+
+[[mirrors]]
+name = "firefox"
+regex = "([0-9.]+)"
+
+[mirrors.source.scoop]
+manifest_url = "https://example.com/firefox.json"
+arch = "x64"
 "#;
         let config: Config = toml::from_str(content).unwrap();
         assert_eq!(config.settings.target, Some("https://example.com/packages".to_string()));
         assert_eq!(config.settings.tool, "aria2");
         assert!(config.settings.keepass.is_some());
-        assert_eq!(config.mirrors.len(), 2);
+        assert_eq!(config.mirrors.len(), 3);
 
         assert_eq!(config.mirrors[0].name, "neovim");
         match &config.mirrors[0].source {
@@ -284,6 +304,15 @@ arch = "x64"
                 assert_eq!(hb.arch, Some("x64".to_string()));
             }
             _ => panic!("expected homebrew source"),
+        }
+
+        assert_eq!(config.mirrors[2].name, "firefox");
+        match &config.mirrors[2].source {
+            MirrorSource::Scoop(sc) => {
+                assert_eq!(sc.manifest_url, "https://example.com/firefox.json");
+                assert_eq!(sc.arch, Some("x64".to_string()));
+            }
+            _ => panic!("expected scoop source"),
         }
     }
 }

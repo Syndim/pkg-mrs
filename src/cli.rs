@@ -6,7 +6,7 @@ use env_logger::Env;
 use log::info;
 
 use crate::config::{Config, MirrorConfig, MirrorSource};
-use crate::sources::{github, homebrew};
+use crate::sources::{github, homebrew, scoop};
 
 pub const CHROME_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
 
@@ -46,8 +46,10 @@ pub struct SyncArgs {
 pub enum Commands {
     /// Mirror packages from GitHub releases
     Github(github::GithubArgs),
-    /// Mirror packages from Homebrew/Scoop manifests
+    /// Mirror packages from Homebrew cask/formula manifests
     Homebrew(homebrew::HomebrewArgs),
+    /// Mirror packages from Scoop manifests
+    Scoop(scoop::ScoopArgs),
     /// Run all mirrors defined in config file
     Sync(SyncArgs),
 }
@@ -66,6 +68,7 @@ pub fn run() -> Result<()> {
     match cli.command {
         Commands::Github(args) => github::handle(args),
         Commands::Homebrew(args) => homebrew::handle(args),
+        Commands::Scoop(args) => scoop::handle(args),
         Commands::Sync(args) => run_from_config(args),
     }
 }
@@ -159,6 +162,22 @@ fn run_mirror(
             };
 
             homebrew::handle(args)
+        }
+        MirrorSource::Scoop(sc) => {
+            let args = scoop::ScoopArgs {
+                common: CommonArgs {
+                    name: mirror.name.clone(),
+                    target: target.to_string(),
+                    token: default_token.to_string(),
+                    tool: tool.to_string(),
+                    regex: mirror.regex.clone(),
+                },
+                manifest_url: sc.manifest_url.clone(),
+                arch: sc.arch.clone(),
+                filename: sc.filename.clone(),
+            };
+
+            scoop::handle(args)
         }
     }
 }
