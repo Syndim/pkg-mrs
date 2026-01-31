@@ -5,11 +5,11 @@
 //! Example config:
 //! ```toml
 //! [settings]
-//! target = "https://example.com/packages"
+//! target = "${ALIST_URL}/packages"  # supports env var expansion
 //! tool = "aria2"
 //!
 //! [settings.keepass]
-//! db_path = "/path/to/database.kdbx"
+//! db_path = "$HOME/secrets/database.kdbx"  # $VAR or ${VAR} syntax
 //! entry_path = "Internet/Alist"
 //!
 //! [[mirrors]]
@@ -36,6 +36,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use keepass::{Database, DatabaseKey, db::Node};
 use log::info;
+use regex::Regex;
 use serde::Deserialize;
 
 /// KeePass configuration for token retrieval.
@@ -158,8 +159,11 @@ impl Config {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("reading config file: {}", path.display()))?;
 
+        // Expand environment variables in the config content
+        let expanded_content = expand_env_vars(&content);
+
         let config: Config =
-            toml::from_str(&content).with_context(|| "parsing config file as TOML")?;
+            toml::from_str(&expanded_content).with_context(|| "parsing config file as TOML")?;
 
         Ok(config)
     }
@@ -196,6 +200,28 @@ impl Config {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("no target URL configured in [settings]"))
     }
+}
+
+/// Expand environment variables in a string.
+/// Supports both `${VAR}` and `$VAR` syntax.
+/// If an environment variable is not set, it is replaced with an empty string.
+fn expand_env_vars(content: &str) -> String {
+    // Match ${VAR} or $VAR patterns
+    // ${VAR} - braced form, allows special characters in var name
+    // $VAR - simple form, var name is alphanumeric + underscore
+    let re = Regex::new(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)").unwrap();
+
+    re.replace_all(content, |caps: &regex::Captures| {
+        // Try braced form first (group 1), then simple form (group 2)
+        let var_name = caps
+            .get(1)
+            .or_else(|| caps.get(2))
+            .map(|m| m.as_str())
+            .unwrap_or("");
+
+        std::env::var(var_name).unwrap_or_default()
+    })
+    .to_string()
 }
 
 /// Lookup an entry in the KeePass database and return its password.
@@ -313,6 +339,105 @@ arch = "x64"
                 assert_eq!(sc.arch, Some("x64".to_string()));
             }
             _ => panic!("expected scoop source"),
+        }
+    }
+
+    #[test]
+    fn test_expand_env_vars() {
+        // Set test env vars
+        // SAFETY: This test runs in isolation and we clean up the env vars at the end
+        unsafe {
+            std::env::set_var("TEST_PKG_MRS_VAR", "hello");
+            std::env::set_var("TEST_PKG_MRS_URL", "https://example.com");
+        }
+
+        // Test ${VAR} syntax
+        assert_eq!(
+            expand_env_vars("value is ${TEST_PKG_MRS_VAR}"),
+            "value is hello"
+        );
+
+        // Test $VAR syntax
+        assert_eq!(
+            expand_env_vars("value is $TEST_PKG_MRS_VAR"),
+            "value is hello"
+        );
+
+        // Test multiple vars
+        assert_eq!(
+            expand_env_vars("${TEST_PKG_MRS_URL}/path/$TEST_PKG_MRS_VAR"),
+            "https://example.com/path/hello"
+        );
+
+        // Test undefined var (should become empty)
+        assert_eq!(
+            expand_env_vars("${UNDEFINED_VAR_12345}"),
+            ""
+        );
+
+        // Test no vars
+        assert_eq!(
+            expand_env_vars("no variables here"),
+            "no variables here"
+        );
+
+        // Cleanup
+        // SAFETY: Cleaning up test env vars
+        unsafe {
+            std::env::remove_var("TEST_PKG_MRS_VAR");
+            std::env::remove_var("TEST_PKG_MRS_URL");
+        }
+    }
+
+    #[test]
+    fn test_parse_config_with_env_vars() {
+        // Set test env vars
+        // SAFETY: This test runs in isolation and we clean up the env vars at the end
+        unsafe {
+            std::env::set_var("TEST_TARGET_HOST", "https://myhost.com");
+            std::env::set_var("TEST_KDBX_PATH", "/home/user/secrets");
+            std::env::set_var("TEST_GH_REPO", "owner/repo");
+        }
+
+        let content = r#"
+[settings]
+target = "${TEST_TARGET_HOST}/packages"
+tool = "aria2"
+
+[settings.keepass]
+db_path = "$TEST_KDBX_PATH/db.kdbx"
+entry_path = "Internet/Alist"
+
+[[mirrors]]
+name = "myapp"
+regex = "v([0-9.]+)"
+
+[mirrors.source.github]
+repo = "$TEST_GH_REPO"
+"#;
+
+        let expanded = expand_env_vars(content);
+        let config: Config = toml::from_str(&expanded).unwrap();
+
+        assert_eq!(config.settings.target, Some("https://myhost.com/packages".to_string()));
+        assert_eq!(
+            config.settings.keepass.as_ref().unwrap().db_path,
+            "/home/user/secrets/db.kdbx"
+        );
+
+        match &config.mirrors[0].source {
+            MirrorSource::Github(gh) => {
+                assert_eq!(gh.repo, "owner/repo");
+            }
+            _ => panic!("expected github source"),
+        }
+
+        // Cleanup
+        // SAFETY: Cleaning up test env vars
+        unsafe {
+            std::env::remove_var("TEST_TARGET_HOST");
+            std::env::remove_var("TEST_KDBX_PATH");
+            std::env::remove_var("TEST_GH_REPO");
         }
     }
 }
