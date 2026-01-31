@@ -25,7 +25,7 @@ stages:
     jobs:
       - job: build
         displayName: Build pkg-mrs
-        container: rust:1.92-bullseye
+        container: rust:1.93-bullseye
         steps:
           - checkout: self
             fetchDepth: 1
