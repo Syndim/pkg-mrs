@@ -1,0 +1,132 @@
+# Azure DevOps Pipeline for building the pkg-mrs Rust CLI (Linux only)
+# Builds a release binary suitable for Debian/Ubuntu (glibc based) environments
+# and publishes it as a build artifact.
+trigger:
+  branches:
+    include:
+      - master
+pr:
+  branches:
+    include:
+      - master
+# Only Linux build (Ubuntu host) using official Rust container (Debian-based)
+pool:
+  vmImage: ubuntu-latest
+# Run all build steps inside a Rust container so we skip installing Rust each run.
+variables:
+  CARGO_TERM_COLOR: always
+  ARTIFACT_NAME: pkg-mrs-linux-amd64
+  # Disable incremental compilation to reduce build size and avoid cache issues
+  CARGO_INCREMENTAL: '0'
+  ALIST_UPLOAD_PATH: /tianyi/packages/pkg-mrs
+stages:
+  - stage: Build
+    displayName: Build Linux Binary
+    jobs:
+      - job: build
+        displayName: Build pkg-mrs
+        container: rust:1.92-bullseye
+        steps:
+          - checkout: self
+            fetchDepth: 1
+          - task: Bash@3
+            displayName: Show toolchain
+            inputs:
+              targetType: inline
+              script: |
+                set -euxo pipefail
+                rustc --version
+                cargo --version
+                TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
+                echo "Target triple: $TRIPLE"
+          - task: Bash@3
+            displayName: Test
+            inputs:
+              targetType: inline
+              script: |
+                set -euxo pipefail
+                cargo test --workspace --all-features --no-fail-fast
+          - task: Bash@3
+            displayName: Build (release)
+            inputs:
+              targetType: inline
+              script: |
+                set -euxo pipefail
+                cargo build --release
+          - task: Bash@3
+            displayName: Prepare artifact
+            inputs:
+              targetType: inline
+              script: |
+                set -euxo pipefail
+                BIN=pkg-mrs
+                OUT_DIR="$(Build.ArtifactStagingDirectory)"
+                mkdir -p "$OUT_DIR"
+                if [ ! -f target/release/$BIN ]; then
+                   echo "Binary target/release/$BIN not found" >&2
+                   ls -R target/release || true
+                   exit 1
+                 fi
+                 cp target/release/$BIN "$OUT_DIR/$BIN"
+                 # Strip to reduce size (image already has strip tool via build-essential)
+                 strip "$OUT_DIR/$BIN" || true
+                ls -lh "$OUT_DIR"
+          - publish: $(Build.ArtifactStagingDirectory)
+            artifact: $(ARTIFACT_NAME)
+            displayName: Publish artifact
+          # Create archive for Alist upload
+          - script: |
+              cd $(Build.ArtifactStagingDirectory)
+              tar -czf pkg-mrs-linux-x64-$(Build.BuildNumber).tar.gz *
+            displayName: 'Create artifact archive'
+          # Upload to Alist
+          - script: |
+              ARCHIVE_NAME="pkg-mrs-linux-x64-$(Build.BuildNumber).tar.gz"
+              ARCHIVE_PATH="$(Build.ArtifactStagingDirectory)/${ARCHIVE_NAME}"
+
+              echo "=== Alist Upload Debug Info ==="
+              echo "Archive name: ${ARCHIVE_NAME}"
+              echo "Archive path: ${ARCHIVE_PATH}"
+              echo "Target path: $(ALIST_UPLOAD_PATH)/${ARCHIVE_NAME}"
+              echo "Alist URL: $(ALIST_URL)/api/fs/put"
+
+              if [ -f "${ARCHIVE_PATH}" ]; then
+                echo "Archive file exists, size: $(stat -c%s "${ARCHIVE_PATH}" 2>/dev/null || stat -f%z "${ARCHIVE_PATH}") bytes"
+              else
+                echo "ERROR: Archive file not found at ${ARCHIVE_PATH}"
+                exit 1
+              fi
+
+              echo ""
+              echo "Sending upload request..."
+              RESPONSE=$(curl -X PUT \
+                -H "Authorization: $(ALIST_TOKEN)" \
+                -H "Content-Type: application/octet-stream" \
+                -H "File-Path: $(ALIST_UPLOAD_PATH)/${ARCHIVE_NAME}" \
+                --data-binary "@${ARCHIVE_PATH}" \
+                -w "\n__HTTP_CODE__:%{http_code}" \
+                -s \
+                "$(ALIST_URL)/api/fs/put")
+
+              HTTP_CODE=$(echo "$RESPONSE" | grep "__HTTP_CODE__:" | cut -d':' -f2)
+              RESPONSE_BODY=$(echo "$RESPONSE" | sed '/^__HTTP_CODE__:/d')
+
+              echo ""
+              echo "=== Upload Response ==="
+              echo "HTTP Status Code: ${HTTP_CODE}"
+              echo "Response Body: ${RESPONSE_BODY}"
+              echo "======================="
+
+              if [ "${HTTP_CODE}" = "200" ]; then
+                echo "Upload successful!"
+                exit 0
+              else
+                echo "Upload failed with HTTP code ${HTTP_CODE}"
+                exit 1
+              fi
+            displayName: 'Upload artifact to Alist'
+            condition: and(succeeded(), ne(variables['ALIST_URL'], ''), ne(variables['ALIST_TOKEN'], ''))
+
+# Usage:
+# After a successful run, download artifact 'pkg-mrs-linux-amd64' for the binary.
+# To run on Debian/Ubuntu: chmod +x pkg-mrs && ./pkg-mrs --help
