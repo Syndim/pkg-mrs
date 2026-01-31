@@ -15,7 +15,7 @@ r:
     cargo build --release
 
 # Download and deploy pkg-mrs binary from tar.gz artifact
-deploy DOWNLOAD_URL SERVER PORT:
+deploy SERVER PORT DOWNLOAD_URL:
     #!/usr/bin/env nu
     let temp_dir = (mktemp -d)
     let archive_path = $"($temp_dir)/pkg-mrs.tar.gz"
