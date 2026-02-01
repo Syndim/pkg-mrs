@@ -7,7 +7,7 @@ use log::info;
 
 use crate::cli::CommonArgs;
 use crate::config::{Config, MirrorConfig, MirrorSource};
-use crate::sources::{github, homebrew, scoop};
+use crate::sources::{github, homebrew, mise, scoop};
 
 /// Arguments for the sync command
 #[derive(clap::Args, Debug)]
@@ -122,6 +122,17 @@ fn run_mirror(
             };
 
             scoop::handle(args)
+        }
+        MirrorSource::Mise(ms) => {
+            let args = mise::MiseArgs {
+                name: mirror.name.clone(),
+                target: target.to_string(),
+                token: default_token.to_string(),
+                tool: tool.to_string(),
+                manifest_url: ms.manifest_url.clone(),
+            };
+
+            mise::handle(args)
         }
     }
 }

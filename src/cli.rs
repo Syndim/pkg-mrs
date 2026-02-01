@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use env_logger::Env;
 
-use crate::sources::{github, homebrew, scoop};
+use crate::sources::{github, homebrew, mise, scoop};
 use crate::sync;
 
 pub const CHROME_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
@@ -37,6 +37,8 @@ pub enum Commands {
     Github(github::GithubArgs),
     /// Mirror packages from Homebrew cask/formula manifests
     Homebrew(homebrew::HomebrewArgs),
+    /// Mirror packages from Mise registry definitions
+    Mise(mise::MiseArgs),
     /// Mirror packages from Scoop manifests
     Scoop(scoop::ScoopArgs),
     /// Run all mirrors defined in config file
@@ -57,6 +59,7 @@ pub fn run() -> Result<()> {
     match cli.command {
         Commands::Github(args) => github::handle(args),
         Commands::Homebrew(args) => homebrew::handle(args),
+        Commands::Mise(args) => mise::handle(args),
         Commands::Scoop(args) => scoop::handle(args),
         Commands::Sync(args) => sync::handle(args),
     }

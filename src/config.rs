@@ -97,13 +97,21 @@ pub struct ScoopSource {
     pub filename: Option<String>,
 }
 
-/// Mirror source type - GitHub, Homebrew, or Scoop.
+/// Mise registry source configuration.
+#[derive(Debug, Deserialize, Clone)]
+pub struct MiseSource {
+    /// Mise registry TOML URL
+    pub manifest_url: String,
+}
+
+/// Mirror source type - GitHub, Homebrew, Scoop, or Mise.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum MirrorSource {
     Github(GithubSource),
     Homebrew(HomebrewSource),
     Scoop(ScoopSource),
+    Mise(MiseSource),
 }
 
 /// A mirror configuration entry.
