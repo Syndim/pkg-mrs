@@ -6,8 +6,9 @@ use log::info;
 use reqwest::header::USER_AGENT;
 use serde::Deserialize;
 
-use crate::alist::{self, url_unescape};
+use crate::alist;
 use crate::cli::{CHROME_UA, CommonArgs};
+use crate::utils::{http, mirror, version};
 
 #[derive(Args, Debug)]
 pub struct ScoopArgs {
@@ -95,10 +96,7 @@ async fn async_handle(args: ScoopArgs) -> Result<()> {
 
     info!("Retrieved token for alist");
 
-    let client = reqwest::Client::builder()
-        .user_agent(CHROME_UA)
-        .build()
-        .context("building reqwest client")?;
+    let client = http::create_client()?;
 
     // Fetch and parse manifest to get download URLs
     info!("Fetching manifest from: {}", args.manifest_url);
@@ -133,7 +131,7 @@ async fn async_handle(args: ScoopArgs) -> Result<()> {
     for pkg in package_urls {
         // Extract version from URL using regex
         let version_for_path =
-            extract_version(&pkg.url, &args.common.regex).unwrap_or_else(|| {
+            version::extract_version(&pkg.url, &args.common.regex).unwrap_or_else(|| {
                 info!(
                     "Failed to extract version from URL using regex, falling back to manifest version: {}",
                     pkg.version
@@ -143,40 +141,27 @@ async fn async_handle(args: ScoopArgs) -> Result<()> {
 
         info!("Mirroring {} {}", args.common.name, version_for_path);
 
-        let filename = determine_filename(
+        let filename = version::determine_filename(
             args.filename.as_deref(),
             &pkg.url,
             &args.common.name,
             &version_for_path,
         );
 
-        let dest_dir = alist::normalize_join(
-            &root_path,
-            &format!("{}/{}/", args.common.name, version_for_path),
-        );
-        let dest_file_path = format!("{}{}", dest_dir, filename);
-        let unescaped_dest_file_path = url_unescape(&dest_file_path);
-
-        info!("Destination: {}", unescaped_dest_file_path);
-
-        // Check if file already exists
-        if alist::file_exists(&client, &origin, token, &unescaped_dest_file_path).await? {
-            info!("File already exists, skipping");
-            continue;
-        }
-
-        // Create offline download task
-        alist::create_offline_download_task(
+        let log_prefix = format!("{}-{}", args.common.name, pkg.arch);
+        mirror::mirror_file(
             &client,
             &origin,
             token,
             &pkg.url,
-            &dest_dir,
+            &root_path,
+            &args.common.name,
+            &version_for_path,
+            &filename,
             &args.common.tool,
+            &log_prefix,
         )
         .await?;
-
-        info!("Offline download task created successfully");
     }
 
     info!("All offline download tasks submitted successfully");
@@ -289,51 +274,10 @@ fn parse_scoop_manifest(content: &str) -> Result<Vec<PackageUrl>> {
     Ok(urls)
 }
 
-/// Extract version from URL using regex pattern
-fn extract_version(input: &str, pattern: &str) -> Option<String> {
-    let re = regex::Regex::new(pattern).ok()?;
-    let caps = re.captures(input)?;
-    caps.get(1).map(|m| m.as_str().to_string())
-}
-
-/// Determine the filename to use for the destination file
-fn determine_filename(
-    custom_filename: Option<&str>,
-    url: &str,
-    package_name: &str,
-    version: &str,
-) -> String {
-    if let Some(filename) = custom_filename {
-        filename.to_string()
-    } else {
-        filename_from_url(url).unwrap_or_else(|| format!("{}-{}.bin", package_name, version))
-    }
-}
-
-fn filename_from_url(url: &str) -> Option<String> {
-    // First, strip off query parameters
-    let main = url.split('?').next().unwrap_or(url);
-
-    // Handle Scoop-style fragments like #/dl.7z or #/installer.exe
-    let without_fragment = main.split('#').next().unwrap_or(main);
-
-    // Extract the last path segment
-    let seg = without_fragment
-        .rsplit('/')
-        .next()
-        .unwrap_or(without_fragment)
-        .trim();
-
-    if seg.is_empty() {
-        None
-    } else {
-        Some(seg.to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::version;
 
     #[test]
     fn test_parse_scoop_manifest_single_url() {
@@ -422,16 +366,16 @@ mod tests {
     #[test]
     fn test_filename_from_url() {
         assert_eq!(
-            filename_from_url("https://example.com/path/file.zip"),
+            version::filename_from_url("https://example.com/path/file.zip"),
             Some("file.zip".to_string())
         );
         assert_eq!(
-            filename_from_url("https://example.com/path/file.zip?param=value"),
+            version::filename_from_url("https://example.com/path/file.zip?param=value"),
             Some("file.zip".to_string())
         );
-        assert_eq!(filename_from_url("https://example.com/"), None);
+        assert_eq!(version::filename_from_url("https://example.com/"), None);
         assert_eq!(
-            filename_from_url("https://example.com/installer.exe#/install.exe"),
+            version::filename_from_url("https://example.com/installer.exe#/install.exe"),
             Some("installer.exe".to_string())
         );
     }
@@ -439,9 +383,9 @@ mod tests {
     #[test]
     fn test_extract_version() {
         assert_eq!(
-            extract_version("v1.2.3", r"v([0-9.]+)"),
+            version::extract_version("v1.2.3", r"v([0-9.]+)"),
             Some("1.2.3".to_string())
         );
-        assert_eq!(extract_version("1.2.3", r"v([0-9.]+)"), None);
+        assert_eq!(version::extract_version("1.2.3", r"v([0-9.]+)"), None);
     }
 }

@@ -17,8 +17,8 @@ use regex::Regex;
 use serde::Deserialize;
 use tera::Tera;
 
-use crate::alist::{self, url_unescape};
-use crate::cli::CHROME_UA;
+use crate::alist;
+use crate::utils::{http, mirror, version};
 
 /// Common platforms supported by mise (from Platform::common_platforms())
 pub const COMMON_PLATFORMS: &[(&str, &str)] = &[
@@ -100,10 +100,7 @@ async fn async_handle(args: MiseArgs) -> Result<()> {
         bail!("alist token is empty");
     }
 
-    let client = reqwest::Client::builder()
-        .user_agent(CHROME_UA)
-        .build()
-        .context("building reqwest client")?;
+    let client = http::create_client()?;
 
     // Fetch mise registry TOML
     info!("Fetching mise registry from: {}", args.manifest_url);
@@ -185,35 +182,21 @@ async fn async_handle(args: MiseArgs) -> Result<()> {
         }
 
         // Extract filename from URL
-        let filename = url
-            .split('/')
-            .last()
-            .unwrap_or("download")
-            .split('?')
-            .next()
-            .unwrap_or("download");
+        let filename = version::filename_from_url(&url).unwrap_or_else(|| "download".to_string());
 
-        let dest_dir =
-            alist::normalize_join(&root_path, &format!("{}/{}/", args.name, version));
-        let dest_file_path = format!("{}{}", dest_dir, filename);
-        let unescaped_dest_file_path = url_unescape(&dest_file_path);
-
-        info!(
-            "[{}] Destination: {}",
-            platform_key, unescaped_dest_file_path
-        );
-
-        // Check if file already exists
-        if alist::file_exists(&client, &origin, token, &unescaped_dest_file_path).await? {
-            info!("[{}] File already exists, skipping", platform_key);
-            continue;
-        }
-
-        // Create offline download task
-        alist::create_offline_download_task(&client, &origin, token, &url, &dest_dir, &args.tool)
-            .await?;
-
-        info!("[{}] Offline download task created", platform_key);
+        mirror::mirror_file(
+            &client,
+            &origin,
+            token,
+            &url,
+            &root_path,
+            &args.name,
+            &version,
+            &filename,
+            &args.tool,
+            &platform_key,
+        )
+        .await?;
     }
 
     info!("All offline download tasks submitted successfully");
@@ -721,48 +704,42 @@ full = "asdf:mise-plugins/mise-hashicorp"
 
     // ==================== URL Availability Integration Tests ====================
 
-    /// Helper to create HTTP client for tests
-    fn create_test_client() -> reqwest::Client {
-        reqwest::Client::builder()
-            .user_agent(CHROME_UA)
-            .build()
-            .unwrap()
-    }
-
     /// Test that a nonexistent URL returns false
     #[tokio::test]
-    async fn test_check_url_exists_nonexistent() {
-        let client = create_test_client();
+    async fn test_check_url_exists_nonexistent() -> Result<()> {
+        let client = crate::utils::http::create_client()?;
         let result = check_url_exists(
             &client,
             "https://storage.googleapis.com/this-bucket-does-not-exist-12345/file.zip",
         )
         .await;
         assert!(!result, "Nonexistent URL should return false");
+        Ok(())
     }
 
     /// Test that a valid URL returns true
     #[tokio::test]
-    async fn test_check_url_exists_valid() {
-        let client = create_test_client();
+    async fn test_check_url_exists_valid() -> Result<()> {
+        let client = crate::utils::http::create_client()?;
         // Use a well-known stable URL
         let result = check_url_exists(&client, "https://www.google.com/robots.txt").await;
         assert!(result, "Valid URL should return true");
+        Ok(())
     }
 
     /// Integration test: Full pipeline for Dart
     /// Parse config -> fetch latest version -> render URLs -> check availability
     #[tokio::test]
-    async fn test_dart_full_pipeline_with_url_check() {
-        let client = create_test_client();
+    async fn test_dart_full_pipeline_with_url_check() -> Result<()> {
+        let client = crate::utils::http::create_client()?;
 
         // Parse config
-        let registry: MiseRegistry = toml::from_str(DART_TOML).unwrap();
+        let registry: MiseRegistry = toml::from_str(DART_TOML)?;
         let http_backend = registry
             .backends
             .iter()
             .find(|b| b.full.starts_with("http:"))
-            .unwrap();
+            .ok_or_else(|| anyhow::anyhow!("no HTTP backend found"))?;
 
         // Fetch latest version (just like main logic)
         let version = fetch_latest_version(
@@ -771,8 +748,7 @@ full = "asdf:mise-plugins/mise-hashicorp"
             http_backend.options.version_json_path.as_deref(),
             http_backend.options.version_regex.as_deref(),
         )
-        .await
-        .unwrap();
+        .await?;
 
         // Version should be a valid semver-like string
         assert!(
@@ -785,7 +761,7 @@ full = "asdf:mise-plugins/mise-hashicorp"
         let mut available_platforms = Vec::new();
         for (os, arch) in COMMON_PLATFORMS {
             let url_template = get_platform_url(&http_backend.options, os, arch).unwrap();
-            let url = render_url_template(url_template, &version, os, arch).unwrap();
+            let url = render_url_template(url_template, &version, os, arch)?;
 
             if check_url_exists(&client, &url).await {
                 available_platforms.push(format!("{}-{}", os, arch));
@@ -806,21 +782,22 @@ full = "asdf:mise-plugins/mise-hashicorp"
             "linux-x64 should be available for Dart, available: {:?}",
             available_platforms
         );
+        Ok(())
     }
 
     /// Integration test: Full pipeline for Sentinel (HashiCorp)
     /// Parse config -> fetch latest version -> render URLs -> check availability
     #[tokio::test]
-    async fn test_sentinel_full_pipeline_with_url_check() {
-        let client = create_test_client();
+    async fn test_sentinel_full_pipeline_with_url_check() -> Result<()> {
+        let client = crate::utils::http::create_client()?;
 
         // Parse config
-        let registry: MiseRegistry = toml::from_str(SENTINEL_TOML).unwrap();
+        let registry: MiseRegistry = toml::from_str(SENTINEL_TOML)?;
         let http_backend = registry
             .backends
             .iter()
             .find(|b| b.full.starts_with("http:"))
-            .unwrap();
+            .ok_or_else(|| anyhow::anyhow!("no HTTP backend found"))?;
 
         // Fetch latest version - sentinel uses version_expr which we don't support,
         // so we'll use auto-detection from the JSON response
@@ -830,8 +807,7 @@ full = "asdf:mise-plugins/mise-hashicorp"
             http_backend.options.version_json_path.as_deref(),
             http_backend.options.version_regex.as_deref(),
         )
-        .await
-        .unwrap();
+        .await?;
 
         // Version should be a valid semver-like string
         assert!(
@@ -842,7 +818,7 @@ full = "asdf:mise-plugins/mise-hashicorp"
 
         // Check macos-x64 (darwin_amd64) - HashiCorp always supports this
         let url_template = get_platform_url(&http_backend.options, "macos", "x64").unwrap();
-        let url = render_url_template(url_template, &version, "macos", "x64").unwrap();
+        let url = render_url_template(url_template, &version, "macos", "x64")?;
 
         let exists = check_url_exists(&client, &url).await;
         assert!(
@@ -853,7 +829,7 @@ full = "asdf:mise-plugins/mise-hashicorp"
 
         // Check linux-x64 (linux_amd64) - HashiCorp always supports this
         let url_template = get_platform_url(&http_backend.options, "linux", "x64").unwrap();
-        let url = render_url_template(url_template, &version, "linux", "x64").unwrap();
+        let url = render_url_template(url_template, &version, "linux", "x64")?;
 
         let exists = check_url_exists(&client, &url).await;
         assert!(
@@ -861,5 +837,6 @@ full = "asdf:mise-plugins/mise-hashicorp"
             "Sentinel linux_amd64 URL should exist for version {}: {}",
             version, url
         );
+        Ok(())
     }
 }

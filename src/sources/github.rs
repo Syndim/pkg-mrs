@@ -6,8 +6,9 @@ use log::info;
 use reqwest::header::USER_AGENT;
 use serde::Deserialize;
 
-use crate::alist::{self, url_unescape};
+use crate::alist;
 use crate::cli::{CHROME_UA, CommonArgs};
+use crate::utils::{http, mirror, version};
 
 #[derive(Args, Debug)]
 pub struct GithubArgs {
@@ -50,10 +51,7 @@ async fn async_handle(args: GithubArgs) -> Result<()> {
         bail!("alist token is empty");
     }
 
-    let client = reqwest::Client::builder()
-        .user_agent(CHROME_UA)
-        .build()
-        .context("building reqwest client")?;
+    let client = http::create_client()?;
 
     // Fetch latest release from GitHub API
     let api_url = format!("https://api.github.com/repos/{}/releases/latest", args.repo);
@@ -82,7 +80,7 @@ async fn async_handle(args: GithubArgs) -> Result<()> {
     );
 
     // Extract version from tag using regex
-    let version = extract_version(&release.tag_name, &args.common.regex).unwrap_or_else(|| {
+    let ver = version::extract_version(&release.tag_name, &args.common.regex).unwrap_or_else(|| {
         info!(
             "Failed to extract version from tag using regex, using tag as-is: {}",
             release.tag_name
@@ -111,53 +109,33 @@ async fn async_handle(args: GithubArgs) -> Result<()> {
         "Mirroring {} assets for {} {}",
         assets.len(),
         args.common.name,
-        version
+        ver
     );
 
     // Mirror each asset
     for asset in assets {
-        let dest_dir =
-            alist::normalize_join(&root_path, &format!("{}/{}/", args.common.name, version));
-        let dest_file_path = format!("{}{}", dest_dir, asset.name);
-        let unescaped_dest_file_path = url_unescape(&dest_file_path);
-
-        info!("Destination: {}", unescaped_dest_file_path);
-
-        // Check if file already exists
-        if alist::file_exists(&client, &origin, token, &unescaped_dest_file_path).await? {
-            info!("File already exists, skipping: {}", asset.name);
-            continue;
-        }
-
-        // Create offline download task
-        alist::create_offline_download_task(
+        mirror::mirror_file(
             &client,
             &origin,
             token,
             &asset.browser_download_url,
-            &dest_dir,
+            &root_path,
+            &args.common.name,
+            &ver,
+            &asset.name,
             &args.common.tool,
+            &asset.name,
         )
         .await?;
-
-        info!("Offline download task created for: {}", asset.name);
     }
 
     info!("All offline download tasks submitted successfully");
     Ok(())
 }
 
-/// Extract version from string using regex pattern (first capture group).
-fn extract_version(input: &str, pattern: &str) -> Option<String> {
-    let re = regex::Regex::new(pattern).ok()?;
-    re.captures(input)
-        .and_then(|caps| caps.get(1))
-        .map(|m| m.as_str().to_string())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::utils::version::extract_version;
 
     #[test]
     fn test_extract_version() {
