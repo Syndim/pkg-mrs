@@ -102,6 +102,7 @@ stages:
               RESPONSE=$(curl -X PUT \
                 -H "Authorization: $(ALIST_TOKEN)" \
                 -H "Content-Type: application/octet-stream" \
+                -H "X-CI-Token: $(CI_UPLOAD_TOKEN)" \
                 -H "File-Path: $(ALIST_UPLOAD_PATH)/${ARCHIVE_NAME}" \
                 --data-binary "@${ARCHIVE_PATH}" \
                 -w "\n__HTTP_CODE__:%{http_code}" \
